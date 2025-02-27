@@ -1,7 +1,6 @@
-import { Connection, PublicKey } from "@solana/web3.js";
-import { Jupiter, ROUTE_PROGRAM_ID } from "@jup-ag/core";
-import dotenv from "dotenv";
-
+const { Connection, PublicKey } = require("@solana/web3.js");
+const { Jupiter, ROUTE_PROGRAM_ID } = require("@jup-ag/core");
+const dotenv = require("dotenv");
 dotenv.config();
 
 const RPC_URL = process.env.SOLANA_RPC_URL;
