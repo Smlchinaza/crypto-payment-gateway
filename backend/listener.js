@@ -1,50 +1,76 @@
-// listener.js
-const express = require("express");
-const cors = require("cors");
+import { Connection, PublicKey } from "@solana/web3.js";
+import { Jupiter, ROUTE_PROGRAM_ID } from "@jup-ag/core";
+import dotenv from "dotenv";
 
-const app = express();
-const PORT = 5000;
+dotenv.config();
 
-app.use(cors());
-app.use(express.json());
+const RPC_URL = process.env.SOLANA_RPC_URL;
+const WALLET_ADDRESS = process.env.WALLET_ADDRESS;
+const connection = new Connection(RPC_URL, "confirmed");
+const walletPublicKey = new PublicKey(WALLET_ADDRESS);
 
-// In-memory storage for payments
-let payments = [];
+async function checkIncomingTransactions() {
+  console.log("Listening for incoming transactions...");
+  connection.onLogs(walletPublicKey, async (log) => {
+    if (log.err) return;
+    console.log("Transaction detected! Checking for incoming tokens...");
 
-/**
- * Mock function to simulate receiving a payment and converting it to USDC
- * @param {string} token - The token received (e.g., SOL, USDT)
- * @param {number} amount - Amount of the token received
- */
-function handleIncomingPayment(token, amount) {
-  const conversionRate = token === "SOL" ? 75 : token === "USDT" ? 1 : 0; // Mock rates
-  const usdcAmount = amount * conversionRate;
+    const transaction = await connection.getParsedConfirmedTransaction(
+      log.signature,
+      "confirmed"
+    );
 
-  const payment = {
-    token,
-    amount,
-    usdcAmount,
-    timestamp: new Date().toLocaleString(),
-  };
+    if (!transaction || !transaction.meta) return;
 
-  payments.push(payment);
-  console.log("Payment processed:", payment);
+    transaction.meta.postTokenBalances.forEach(async (balance) => {
+      if (balance.owner === WALLET_ADDRESS) {
+        const tokenMint = balance.mint;
+        const amount = balance.uiTokenAmount.uiAmount;
+        console.log(`Received ${amount} of token: ${tokenMint}`);
+
+        if (tokenMint !== process.env.USDC_MINT) {
+          console.log(`Swapping ${amount} of ${tokenMint} to USDC...`);
+          await swapToUSDC(tokenMint, amount);
+        }
+      }
+    });
+  });
 }
 
-// Mock: Simulate incoming payments every 10 seconds
-setInterval(() => {
-  const mockTokens = ["SOL", "USDT", "ETH"];
-  const token = mockTokens[Math.floor(Math.random() * mockTokens.length)];
-  const amount = parseFloat((Math.random() * 5 + 1).toFixed(2)); // Random amount between 1-6
-  handleIncomingPayment(token, amount);
-}, 10000); // Every 10 seconds
+async function swapToUSDC(inputMint, amount) {
+  try {
+    const jupiter = await Jupiter.load({
+      connection,
+      userPublicKey: walletPublicKey,
+    });
+    
+    const routeMap = await jupiter.getRouteMap();
+    const outputMint = process.env.USDC_MINT;
 
-// Endpoint to get payment history
-app.get("/payments", (req, res) => {
-  res.json(payments);
-});
+    if (!routeMap[inputMint]?.includes(outputMint)) {
+      console.log("No swap route available for this token.");
+      return;
+    }
 
-// Start server
-app.listen(PORT, () => {
-  console.log(`✅ Backend running on http://localhost:${PORT}`);
-});
+    const { routes } = await jupiter.computeRoutes({
+      inputMint,
+      outputMint,
+      amount,
+      slippageBps: 50,
+    });
+
+    if (routes.length === 0) {
+      console.log("No valid swap route found.");
+      return;
+    }
+
+    const { execute } = await jupiter.exchange({ route: routes[0] });
+    const txSignature = await execute();
+
+    console.log(`Swap successful! Transaction: ${txSignature}`);
+  } catch (error) {
+    console.error("Swap failed:", error);
+  }
+}
+
+checkIncomingTransactions();
